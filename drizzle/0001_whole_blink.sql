@@ -1,0 +1,6 @@
+ALTER TABLE "tryout_sessions" ADD CONSTRAINT "tryout_sessions_duration_positive" CHECK ("tryout_sessions"."duration_seconds" > 0);--> statement-breakpoint
+ALTER TABLE "tryout_sessions" ADD CONSTRAINT "tryout_sessions_total_positive" CHECK ("tryout_sessions"."total_questions" > 0);--> statement-breakpoint
+ALTER TABLE "tryout_sessions" ADD CONSTRAINT "tryout_sessions_deadline_after_start" CHECK ("tryout_sessions"."deadline_at" >= "tryout_sessions"."started_at");--> statement-breakpoint
+ALTER TABLE "tryout_sessions" ADD CONSTRAINT "tryout_sessions_paused_remaining_valid" CHECK ("tryout_sessions"."paused_remaining_seconds" IS NULL OR "tryout_sessions"."paused_remaining_seconds" BETWEEN 0 AND "tryout_sessions"."duration_seconds");--> statement-breakpoint
+ALTER TABLE "tryout_sessions" ADD CONSTRAINT "tryout_sessions_score_range" CHECK ("tryout_sessions"."score" IS NULL OR "tryout_sessions"."score" BETWEEN 0 AND 100);--> statement-breakpoint
+ALTER TABLE "tryout_sessions" ADD CONSTRAINT "tryout_sessions_finished_consistent" CHECK (("tryout_sessions"."status" = 'selesai') = ("tryout_sessions"."finished_at" IS NOT NULL));

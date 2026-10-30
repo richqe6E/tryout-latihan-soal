@@ -1,0 +1,6 @@
+ALTER TABLE "tryout_sessions" DROP CONSTRAINT "tryout_sessions_result_consistent";--> statement-breakpoint
+ALTER TABLE "tryout_sessions" ADD COLUMN "used_seconds" integer;--> statement-breakpoint
+-- Sesi lama: perkirakan dari selisih selesai - mulai, dibatasi durasi.
+UPDATE "tryout_sessions" SET "used_seconds" = LEAST(GREATEST(ROUND(EXTRACT(EPOCH FROM ("finished_at" - "started_at")))::int, 0), "duration_seconds") WHERE "status" = 'selesai';--> statement-breakpoint
+ALTER TABLE "tryout_sessions" ADD CONSTRAINT "tryout_sessions_used_seconds_valid" CHECK ("tryout_sessions"."used_seconds" IS NULL OR "tryout_sessions"."used_seconds" BETWEEN 0 AND "tryout_sessions"."duration_seconds");--> statement-breakpoint
+ALTER TABLE "tryout_sessions" ADD CONSTRAINT "tryout_sessions_result_consistent" CHECK (("tryout_sessions"."status" = 'selesai') = ("tryout_sessions"."score" IS NOT NULL AND "tryout_sessions"."correct_count" IS NOT NULL AND "tryout_sessions"."wrong_count" IS NOT NULL AND "tryout_sessions"."unanswered_count" IS NOT NULL AND "tryout_sessions"."used_seconds" IS NOT NULL));

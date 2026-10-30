@@ -1,0 +1,3 @@
+ALTER TABLE "tryout_sessions" ADD COLUMN "deleted_at" timestamp with time zone;--> statement-breakpoint
+CREATE INDEX "tryout_sessions_user_history_idx" ON "tryout_sessions" USING btree ("user_id","started_at" DESC NULLS LAST) WHERE "tryout_sessions"."deleted_at" IS NULL;--> statement-breakpoint
+CREATE INDEX "tryout_sessions_deleted_idx" ON "tryout_sessions" USING btree ("deleted_at") WHERE "tryout_sessions"."deleted_at" IS NOT NULL;

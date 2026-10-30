@@ -1,0 +1,21 @@
+# Database PostgreSQL untuk pengembangan lokal.
+services:
+  db:
+    image: postgres:17-alpine
+    container_name: tryout-yuk-opus-db
+    environment:
+      POSTGRES_USER: tryout
+      POSTGRES_PASSWORD: tryout_dev
+      POSTGRES_DB: tryout_yuk
+    ports:
+      - "127.0.0.1:55442:5432"
+    volumes:
+      - tryout-yuk-opus-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tryout -d tryout_yuk"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  tryout-yuk-opus-db:

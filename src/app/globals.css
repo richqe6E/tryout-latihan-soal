@@ -1,0 +1,213 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme static {
+  /* Palet ceria ala aplikasi belajar (selaras token DesainPakeAI --color-play-*) */
+  --color-play-green: #58cc02;
+  --color-play-green-strong: #43a000;
+  --color-play-green-shade: #357f00;
+  --color-play-green-soft: #d7ffb8;
+  --color-play-green-ink: #2f6b00;
+  --color-play-blue: #1cb0f6;
+  --color-play-blue-strong: #1290d0;
+  --color-play-blue-shade: #0e6fa3;
+  --color-play-blue-soft: #ddf4ff;
+  --color-play-blue-ink: #0b6a9e;
+  --color-play-red: #ff4b4b;
+  --color-play-red-soft: #ffdfe0;
+  --color-play-red-ink: #b42323;
+  --color-play-gold: #ffc800;
+  --color-play-gold-shade: #e0a800;
+  --color-play-gold-soft: #fff5d3;
+  --color-play-gold-ink: #8a5a00;
+  --color-play-ink: #4b4b4b;
+  --color-play-ink-muted: #6b6b6b;
+  --color-play-ink-faint: #afafaf;
+  --color-play-line: #e5e5e5;
+  --color-play-polar: #f7f7f7;
+  --color-play-snow: #ffffff;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-nunito), ui-rounded, "Segoe UI", system-ui, sans-serif;
+  --font-mono: ui-monospace, monospace;
+  --font-heading: var(--font-sans);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --radius-sm: calc(var(--radius) * 0.5);
+  --radius-md: calc(var(--radius) * 0.625);
+  --radius-lg: calc(var(--radius) * 0.75);
+  --radius-xl: var(--radius);
+  --radius-2xl: calc(var(--radius) * 1.25);
+  --radius-3xl: calc(var(--radius) * 1.5);
+  --radius-4xl: calc(var(--radius) * 2);
+
+  --animate-enter: tryout-enter 260ms cubic-bezier(0.4, 0, 0.2, 1) both;
+  --animate-drop: tryout-drop 300ms cubic-bezier(0.4, 0, 0.2, 1) both;
+  --animate-nudge: tryout-nudge 600ms cubic-bezier(0.4, 0, 0.2, 1) 1;
+  --animate-pop: tryout-pop 220ms cubic-bezier(0.4, 0, 0.2, 1);
+  --animate-bounce-in: tryout-bounce 700ms cubic-bezier(0.4, 0, 0.2, 1) both;
+
+  @keyframes tryout-enter {
+    from {
+      opacity: 0;
+      transform: translateX(24px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+  @keyframes tryout-drop {
+    from {
+      opacity: 0;
+      transform: translateY(-8px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+  @keyframes tryout-nudge {
+    0%,
+    100% {
+      transform: translateX(0);
+    }
+    20% {
+      transform: translateX(-4px);
+    }
+    40% {
+      transform: translateX(4px);
+    }
+    60% {
+      transform: translateX(-2px);
+    }
+    80% {
+      transform: translateX(2px);
+    }
+  }
+  @keyframes tryout-pop {
+    0% {
+      transform: scale(1);
+    }
+    50% {
+      transform: scale(1.15);
+    }
+    100% {
+      transform: scale(1);
+    }
+  }
+  @keyframes tryout-bounce {
+    0% {
+      opacity: 0;
+      transform: scale(0.6);
+    }
+    60% {
+      opacity: 1;
+      transform: scale(1.08);
+    }
+    100% {
+      opacity: 1;
+      transform: none;
+    }
+  }
+}
+
+:root {
+  --background: #ffffff;
+  --foreground: #4b4b4b;
+  --card: #ffffff;
+  --card-foreground: #4b4b4b;
+  --popover: #ffffff;
+  --popover-foreground: #4b4b4b;
+  --primary: #43a000;
+  --primary-foreground: #ffffff;
+  --secondary: #f7f7f7;
+  --secondary-foreground: #4b4b4b;
+  --muted: #f7f7f7;
+  --muted-foreground: #6b6b6b;
+  --accent: #ddf4ff;
+  --accent-foreground: #0b6a9e;
+  --destructive: #b42323;
+  --border: #e5e5e5;
+  --input: #e5e5e5;
+  --ring: #1cb0f6;
+  --radius: 1rem;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+  html {
+    @apply font-sans;
+  }
+}
+
+@layer utilities {
+  /* Efek tombol "3D" — tepi bawah tebal yang mengempis saat ditekan */
+  .press-3d {
+    border-width: 2px 2px 4px;
+  }
+  .press-3d:active:not(:disabled) {
+    transform: translateY(2px);
+    border-bottom-width: 2px;
+    margin-bottom: 2px;
+  }
+}
+
+/* Garis bawah header muncul saat konten di-scroll (tanpa JS). */
+@supports (animation-timeline: scroll()) {
+  .scroll-edge {
+    animation: scroll-edge linear both;
+    animation-timeline: scroll(root);
+    animation-range: 0 24px;
+  }
+  @keyframes scroll-edge {
+    from {
+      border-bottom-color: transparent;
+    }
+    to {
+      border-bottom-color: var(--color-play-line);
+    }
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+  }
+  .scroll-edge {
+    animation-duration: auto !important;
+  }
+}
