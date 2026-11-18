@@ -1,11 +1,11 @@
 /** Konstanta sesi bersama (proxy dan server). */
-/** Awalan cookie Better Auth → `tryoutyuk.session_token`. */
 export const AUTH_COOKIE_PREFIX = "tryoutyuk";
+export const STUDENT_COOKIE_NAME = "tryoutyuk_student";
 
-/** Halaman yang wajib masuk dulu. */
+/** Halaman yang memerlukan identitas siswa (cukup isi nama siswa). */
 export const PROTECTED_PREFIXES = ["/akun", "/mulai", "/nilai", "/pengaturan", "/riwayat", "/tryout"];
 
-/** API data pribadi yang wajib masuk (tanpa cookie sesi → 401). */
+/** API data pribadi yang wajib memiliki sesi siswa. */
 export const PROTECTED_API_PREFIXES = [
   "/api/scores",
   "/api/history",

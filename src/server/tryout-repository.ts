@@ -1,9 +1,18 @@
 import "server-only";
 
 import { and, asc, desc, eq, inArray, isNull, lt, ne, sql } from "drizzle-orm";
-import { db } from "@/db";
+import { db, hasDatabase } from "@/db";
+import type { CognitiveLevel, VisualAssetId } from "@/lib/kisi-kisi/types";
 import type { ReviewFilter } from "@/lib/tryout/review-filter";
 import { answers, options, questions, sessionQuestions, subjects, tryoutSessions } from "@/db/schema";
+import {
+  getLocalPracticeHistory,
+  getLocalResultLookupForUser,
+  getLocalReviewDetailForUser,
+  getLocalReviewForUser,
+  getLocalScoreHistory,
+  getLocalSessionForUser,
+} from "@/server/local-store";
 import { expireIfNeeded, expireOverdueForUser } from "@/server/tryout-service";
 import type {
   AnswerState,
@@ -22,20 +31,25 @@ import type {
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/** Sesi yang dihapus pengguna dari riwayat tidak tampil di mana pun. */
 export const notDeleted = isNull(tryoutSessions.deletedAt);
 
 export function isUuid(value: string) {
   return UUID_PATTERN.test(value);
 }
 
-/**
- * Sesi tryout milik pengguna beserta soal (urut) dan jawabannya.
- * Kunci jawaban dan pembahasan TIDAK ikut — aman dikirim ke browser selama tryout.
- * Mengembalikan null bila sesi tidak ada atau bukan milik pengguna.
- */
+function parseAccepted(raw: string | null | undefined): string[] | undefined {
+  if (!raw) return undefined;
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.map(String) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export async function getSessionForUser(sessionId: string, userId: string): Promise<TryoutSession | null> {
   if (!isUuid(sessionId)) return null;
+  if (!hasDatabase()) return getLocalSessionForUser(sessionId, userId);
 
   const [session] = await db
     .select({ session: tryoutSessions, subject: subjects })
@@ -45,7 +59,6 @@ export async function getSessionForUser(sessionId: string, userId: string): Prom
     .limit(1);
   if (!session) return null;
 
-  // Waktu habis saat pengguna tidak membuka halaman → tutup sekarang, tampilkan sebagai selesai.
   if (await expireIfNeeded(session.session)) {
     return getSessionForUser(sessionId, userId);
   }
@@ -55,6 +68,15 @@ export async function getSessionForUser(sessionId: string, userId: string): Prom
       id: questions.id,
       orderNumber: sessionQuestions.orderNumber,
       text: questions.questionText,
+      questionType: questions.questionType,
+      typeLabel: questions.typeLabel,
+      topic: questions.topic,
+      indicator: questions.indicator,
+      cognitiveLevel: questions.cognitiveLevel,
+      stimulusTitle: questions.stimulusTitle,
+      stimulusText: questions.stimulusText,
+      visualAsset: questions.visualAsset,
+      visualCaption: questions.visualCaption,
     })
     .from(sessionQuestions)
     .innerJoin(questions, eq(questions.id, sessionQuestions.questionId))
@@ -74,6 +96,7 @@ export async function getSessionForUser(sessionId: string, userId: string): Prom
     .select({
       questionId: answers.questionId,
       selectedOptionId: answers.selectedOptionId,
+      answerText: answers.answerText,
       isFlagged: answers.isFlagged,
     })
     .from(answers)
@@ -88,20 +111,23 @@ export async function getSessionForUser(sessionId: string, userId: string): Prom
 
   const answerMap: Record<string, AnswerState> = {};
   for (const answer of answerRows) {
-    answerMap[answer.questionId] = { selectedOptionId: answer.selectedOptionId, isFlagged: answer.isFlagged };
+    answerMap[answer.questionId] = {
+      selectedOptionId: answer.selectedOptionId,
+      answerText: answer.answerText,
+      isFlagged: answer.isFlagged,
+    };
   }
 
   const { session: row, subject } = session;
   return {
     id: row.id,
-    title: `Tryout ${subject.name}`,
+    title: row.mode === "kisi-kisi" ? `Latihan Kisi-Kisi ${subject.name}` : `Tryout ${subject.name}`,
     subject: { id: subject.slug, name: subject.name, description: subject.description },
     difficulty: row.difficulty,
+    mode: row.mode === "latihan" ? "latihan" : "kisi-kisi",
     totalQuestions: row.totalQuestions,
     durationSeconds: row.durationSeconds,
     startedAt: row.startedAt.toISOString(),
-    // Sesi dijeda: timer berhenti, jadi tampilkan batas waktu seolah dilanjutkan sekarang
-    // (klien lalu memanggil resume agar server menetapkan batas waktu barunya).
     deadline:
       row.pausedRemainingSeconds === null
         ? row.deadlineAt.toISOString()
@@ -110,6 +136,15 @@ export async function getSessionForUser(sessionId: string, userId: string): Prom
     questions: questionRows.map((question) => ({
       id: question.id,
       orderNumber: question.orderNumber,
+      questionType: question.questionType,
+      typeLabel: question.typeLabel ?? undefined,
+      topic: question.topic ?? undefined,
+      indicator: question.indicator ?? undefined,
+      cognitiveLevel: (question.cognitiveLevel as CognitiveLevel | null) ?? undefined,
+      stimulusTitle: question.stimulusTitle ?? undefined,
+      stimulusText: question.stimulusText ?? undefined,
+      visualAsset: (question.visualAsset as VisualAssetId | null) ?? undefined,
+      visualCaption: question.visualCaption ?? undefined,
       text: question.text,
       options: optionsByQuestion.get(question.id) ?? [],
     })),
@@ -119,22 +154,31 @@ export async function getSessionForUser(sessionId: string, userId: string): Prom
   };
 }
 
-/**
- * Soal sesi lengkap dengan kunci & pembahasan. Sengaja tidak diekspor: pemanggil di modul ini
- * wajib memastikan sesi sudah selesai supaya kunci jawaban tidak bocor.
- */
 async function getReviewQuestions(sessionId: string): Promise<ReviewQuestion[]> {
   const questionRows = await db
     .select({
       id: questions.id,
       orderNumber: sessionQuestions.orderNumber,
       text: questions.questionText,
+      questionType: questions.questionType,
+      typeLabel: questions.typeLabel,
+      topic: questions.topic,
+      indicator: questions.indicator,
+      cognitiveLevel: questions.cognitiveLevel,
+      stimulusTitle: questions.stimulusTitle,
+      stimulusText: questions.stimulusText,
+      visualAsset: questions.visualAsset,
+      visualCaption: questions.visualCaption,
+      expectedAnswer: questions.expectedAnswer,
+      acceptedAnswers: questions.acceptedAnswers,
+      rubricNotes: questions.rubricNotes,
       explanation: questions.explanation,
     })
     .from(sessionQuestions)
     .innerJoin(questions, eq(questions.id, sessionQuestions.questionId))
     .where(eq(sessionQuestions.sessionId, sessionId))
     .orderBy(asc(sessionQuestions.orderNumber));
+
   const questionIds = questionRows.map((row) => row.id);
   const optionRows = questionIds.length
     ? await db
@@ -155,17 +199,28 @@ async function getReviewQuestions(sessionId: string): Promise<ReviewQuestion[]> 
     return {
       id: question.id,
       orderNumber: question.orderNumber,
+      questionType: question.questionType,
+      typeLabel: question.typeLabel ?? undefined,
+      topic: question.topic ?? undefined,
+      indicator: question.indicator ?? undefined,
+      cognitiveLevel: (question.cognitiveLevel as CognitiveLevel | null) ?? undefined,
+      stimulusTitle: question.stimulusTitle ?? undefined,
+      stimulusText: question.stimulusText ?? undefined,
+      visualAsset: (question.visualAsset as VisualAssetId | null) ?? undefined,
+      visualCaption: question.visualCaption ?? undefined,
       text: question.text,
       options: own.map(({ id, text, explanation }) =>
         explanation ? { id, text, explanation } : { id, text },
       ),
       correctOptionId: own.find((option) => option.isCorrect)?.id ?? "",
+      expectedAnswer: question.expectedAnswer ?? undefined,
+      acceptedAnswers: parseAccepted(question.acceptedAnswers),
+      rubricNotes: question.rubricNotes ?? undefined,
       explanation: question.explanation,
     };
   });
 }
 
-/** Pembanding: tryout lain dengan mapel sama yang selesai sebelum `before`, terbaru dulu. */
 async function getSubjectHistory(
   userId: string,
   subject: { id: string; slug: string; name: string },
@@ -175,6 +230,7 @@ async function getSubjectHistory(
   const rows = await db
     .select({
       sessionId: tryoutSessions.id,
+      mode: tryoutSessions.mode,
       score: tryoutSessions.score,
       correctCount: tryoutSessions.correctCount,
       totalQuestions: tryoutSessions.totalQuestions,
@@ -198,7 +254,7 @@ async function getSubjectHistory(
     .limit(10);
   return rows.map((row) => ({
     sessionId: row.sessionId,
-    title: `Tryout ${subject.name}`,
+    title: row.mode === "kisi-kisi" ? `Latihan Kisi-Kisi ${subject.name}` : `Tryout ${subject.name}`,
     subjectId: subject.slug,
     subjectName: subject.name,
     difficulty: row.difficulty,
@@ -211,13 +267,10 @@ async function getSubjectHistory(
   }));
 }
 
-/**
- * Hasil & pembahasan sesi yang SUDAH selesai (kunci jawaban ikut).
- * Mengembalikan null bila sesi bukan milik pengguna atau belum dikumpulkan,
- * supaya kunci jawaban tidak bocor selama tryout berjalan.
- */
 export async function getReviewForUser(sessionId: string, userId: string): Promise<TryoutReview | null> {
   if (!isUuid(sessionId)) return null;
+  if (!hasDatabase()) return getLocalReviewForUser(sessionId, userId);
+
   const [found] = await db
     .select({ session: tryoutSessions, subject: subjects })
     .from(tryoutSessions)
@@ -234,6 +287,7 @@ export async function getReviewForUser(sessionId: string, userId: string): Promi
       .select({
         questionId: answers.questionId,
         selectedOptionId: answers.selectedOptionId,
+        answerText: answers.answerText,
         isFlagged: answers.isFlagged,
       })
       .from(answers)
@@ -243,14 +297,19 @@ export async function getReviewForUser(sessionId: string, userId: string): Promi
 
   const answerMap: Record<string, AnswerState> = {};
   for (const answer of answerRows) {
-    answerMap[answer.questionId] = { selectedOptionId: answer.selectedOptionId, isFlagged: answer.isFlagged };
+    answerMap[answer.questionId] = {
+      selectedOptionId: answer.selectedOptionId,
+      answerText: answer.answerText,
+      isFlagged: answer.isFlagged,
+    };
   }
 
   return {
     sessionId: session.id,
-    title: `Tryout ${subject.name}`,
+    title: session.mode === "kisi-kisi" ? `Latihan Kisi-Kisi ${subject.name}` : `Tryout ${subject.name}`,
     subject: { id: subject.slug, name: subject.name, description: subject.description },
     difficulty: session.difficulty,
+    mode: session.mode === "latihan" ? "latihan" : "kisi-kisi",
     durationSeconds: session.durationSeconds,
     startedAt: session.startedAt.toISOString(),
     finishedAt: finishedAt.toISOString(),
@@ -263,11 +322,6 @@ export async function getReviewForUser(sessionId: string, userId: string): Promi
   };
 }
 
-/**
- * Detail hasil sesi yang sudah selesai, dibaca dari hasil yang tersimpan saat dikumpulkan:
- * ringkasan nilai, status per soal, dan pembanding riwayat nilai mapel yang sama.
- * Null bila belum selesai / bukan milik pengguna. Tidak memuat teks soal maupun kunci jawaban.
- */
 export async function getResultDetailForUser(
   sessionId: string,
   userId: string,
@@ -279,15 +333,12 @@ export async function getResultDetailForUser(
 export type ResultLookup =
   | { status: "ok"; result: TryoutResultDetail }
   | { status: "not_found" }
-  /** Sesi masih berjalan: hasil belum ada; sertakan info untuk melanjutkannya. */
   | { status: "not_finished"; lastOrderNumber: number; remainingSeconds: number; paused: boolean };
 
-/**
- * Detail hasil dengan alasan bila tidak tersedia (tidak ada / belum selesai). Sesi yang
- * waktunya sudah habis ditutup dulu, sehingga langsung punya hasil.
- */
 export async function getResultLookupForUser(sessionId: string, userId: string): Promise<ResultLookup> {
   if (!isUuid(sessionId)) return { status: "not_found" };
+  if (!hasDatabase()) return getLocalResultLookupForUser(sessionId, userId);
+
   const [found] = await db
     .select({ session: tryoutSessions, subject: subjects })
     .from(tryoutSessions)
@@ -311,7 +362,6 @@ export async function getResultLookupForUser(sessionId: string, userId: string):
   const finishedAt = found.session.finishedAt;
 
   const [itemRows, history] = await Promise.all([
-    // Hasil per soal dari penanda is_correct yang ditulis saat penilaian.
     db
       .select({
         number: sessionQuestions.orderNumber,
@@ -345,7 +395,7 @@ export async function getResultLookupForUser(sessionId: string, userId: string):
 
   const result: TryoutResultDetail = {
     sessionId: session.id,
-    title: `Tryout ${subject.name}`,
+    title: session.mode === "kisi-kisi" ? `Latihan Kisi-Kisi ${subject.name}` : `Tryout ${subject.name}`,
     subject: { id: subject.slug, name: subject.name, description: subject.description },
     difficulty: session.difficulty,
     score,
@@ -371,29 +421,23 @@ export async function getResultLookupForUser(sessionId: string, userId: string):
 }
 
 export type ScoreHistoryQuery = {
-  /** Slug mapel; kosong = semua mapel. */
   subject?: string;
-  /** Tingkat kesulitan; kosong = semua tingkat. */
   difficulty?: Difficulty;
-  /** Maksimal baris per halaman (1–100). */
   limit?: number;
-  /** Kursor: ambil yang selesai sebelum waktu ini (ISO). */
   before?: Date;
 };
 
 export type ScoreHistoryPage = {
   items: ScoreHistoryEntry[];
-  /** Kursor halaman berikutnya (ISO `finishedAt` baris terakhir); null bila habis. */
   nextCursor: string | null;
-  /** Ringkasan seluruh riwayat (sesuai filter mapel), bukan hanya halaman ini. */
   summary: { count: number; average: number; best: number };
 };
 
-/** Riwayat nilai pengguna: tryout yang sudah selesai, terbaru dulu. */
 export async function getScoreHistoryForUser(
   userId: string,
   query: ScoreHistoryQuery = {},
 ): Promise<ScoreHistoryPage> {
+  if (!hasDatabase()) return getLocalScoreHistory(userId, query);
   const limit = Math.min(Math.max(query.limit ?? 50, 1), 100);
   const scope = and(
     eq(tryoutSessions.userId, userId),
@@ -407,6 +451,7 @@ export async function getScoreHistoryForUser(
     db
       .select({
         sessionId: tryoutSessions.id,
+        mode: tryoutSessions.mode,
         subjectSlug: subjects.slug,
         subjectName: subjects.name,
         difficulty: tryoutSessions.difficulty,
@@ -421,7 +466,6 @@ export async function getScoreHistoryForUser(
       .innerJoin(subjects, eq(subjects.id, tryoutSessions.subjectId))
       .where(and(scope, query.before ? lt(tryoutSessions.finishedAt, query.before) : undefined))
       .orderBy(desc(tryoutSessions.finishedAt), desc(tryoutSessions.id))
-      // Satu baris ekstra untuk mengetahui apakah masih ada halaman berikutnya.
       .limit(limit + 1),
     db
       .select({
@@ -437,7 +481,7 @@ export async function getScoreHistoryForUser(
   const page = rows.slice(0, limit);
   const items: ScoreHistoryEntry[] = page.map((row) => ({
     sessionId: row.sessionId,
-    title: `Tryout ${row.subjectName}`,
+    title: row.mode === "kisi-kisi" ? `Latihan Kisi-Kisi ${row.subjectName}` : `Tryout ${row.subjectName}`,
     subjectId: row.subjectSlug,
     subjectName: row.subjectName,
     difficulty: row.difficulty,
@@ -458,17 +502,14 @@ export async function getScoreHistoryForUser(
 export type ReviewLookup =
   { status: "ok"; review: TryoutReviewDetail } | { status: "not_found" } | { status: "not_finished" };
 
-/**
- * Pembahasan sesi: soal, pilihan, kunci, jawaban pengguna, status benar/salah/kosong
- * (dari penilaian yang tersimpan), dan penjelasan. Hanya untuk sesi yang SUDAH selesai.
- * `filter` menyaring daftar soal (mis. "salah" untuk fokus belajar dari kesalahan).
- */
 export async function getReviewDetailForUser(
   sessionId: string,
   userId: string,
   filter: ReviewFilter = "semua",
 ): Promise<ReviewLookup> {
   if (!isUuid(sessionId)) return { status: "not_found" };
+  if (!hasDatabase()) return getLocalReviewDetailForUser(sessionId, userId, filter);
+
   const [found] = await db
     .select({ session: tryoutSessions, subject: subjects })
     .from(tryoutSessions)
@@ -486,6 +527,7 @@ export async function getReviewDetailForUser(
       .select({
         questionId: answers.questionId,
         selectedOptionId: answers.selectedOptionId,
+        answerText: answers.answerText,
         isFlagged: answers.isFlagged,
         isCorrect: answers.isCorrect,
       })
@@ -501,6 +543,15 @@ export async function getReviewDetailForUser(
     return {
       number: question.orderNumber,
       questionId: question.id,
+      questionType: question.questionType,
+      typeLabel: question.typeLabel,
+      topic: question.topic,
+      indicator: question.indicator,
+      cognitiveLevel: question.cognitiveLevel,
+      stimulusTitle: question.stimulusTitle,
+      stimulusText: question.stimulusText,
+      visualAsset: question.visualAsset,
+      visualCaption: question.visualCaption,
       text: question.text,
       options: question.options.map((option) => ({
         ...option,
@@ -508,6 +559,9 @@ export async function getReviewDetailForUser(
       })),
       correctOptionId: question.correctOptionId,
       selectedOptionId: outcome === "kosong" ? null : (answer?.selectedOptionId ?? null),
+      answerText: answer?.answerText ?? null,
+      expectedAnswer: question.expectedAnswer,
+      rubricNotes: question.rubricNotes,
       outcome,
       flagged: answer?.isFlagged ?? false,
       explanation: question.explanation,
@@ -519,7 +573,7 @@ export async function getReviewDetailForUser(
     status: "ok",
     review: {
       sessionId: session.id,
-      title: `Tryout ${subject.name}`,
+      title: session.mode === "kisi-kisi" ? `Latihan Kisi-Kisi ${subject.name}` : `Tryout ${subject.name}`,
       subject: { id: subject.slug, name: subject.name, description: subject.description },
       difficulty: session.difficulty,
       score: session.score ?? 0,
@@ -531,43 +585,35 @@ export async function getReviewDetailForUser(
         kosong: countOf("kosong"),
       },
       filter,
-      // Hitungan tetap untuk semua soal; hanya daftar soal yang disaring.
       items: filter === "semua" ? items : items.filter((item) => item.outcome === filter),
     },
   };
 }
 
 export type PracticeHistoryQuery = {
-  /** "berjalan" = hanya yang belum selesai, "selesai" = hanya yang selesai; bawaan keduanya. */
   status?: "berjalan" | "selesai";
-  /** Maksimal sesi SELESAI per halaman (1–100, bawaan 50). Sesi berjalan selalu ikut semua. */
   limit?: number;
-  /** Kursor sesi selesai: ambil yang selesai sebelum waktu ini (ISO). */
   before?: Date;
 };
 
 export type PracticeHistoryPage = {
-  /** Sesi berjalan dulu (terakhir dibuka di atas), lalu sesi selesai terbaru dulu. */
   items: PracticeHistoryItem[];
-  /** Kursor halaman sesi selesai berikutnya; null bila habis. */
   nextCursor: string | null;
-  /** Waktu server (ms) saat data dibuat, acuan teks "x menit lalu" & sisa waktu. */
   now: number;
 };
 
-/** Riwayat latihan pengguna: semua tryout yang belum dihapus, berjalan maupun selesai. */
 export async function getPracticeHistoryForUser(
   userId: string,
   query: PracticeHistoryQuery = {},
 ): Promise<PracticeHistoryPage> {
-  // Sesi yang waktunya habis saat ditinggal langsung ditutup, supaya tampil sebagai selesai.
+  if (!hasDatabase()) return getLocalPracticeHistory(userId, query);
   await expireOverdueForUser(userId);
   const limit = Math.min(Math.max(query.limit ?? 50, 1), 100);
 
   const answered = db
     .select({
       sessionId: answers.sessionId,
-      count: sql<number>`count(*) filter (where ${answers.selectedOptionId} is not null)::int`.as("answered"),
+      count: sql<number>`count(*) filter (where ${answers.selectedOptionId} is not null or length(btrim(coalesce(${answers.answerText}, ''))) > 0)::int`.as("answered"),
     })
     .from(answers)
     .groupBy(answers.sessionId)
@@ -608,7 +654,7 @@ export async function getPracticeHistoryForUser(
     answered: answeredCount,
   }: (typeof ongoingRows)[number]): PracticeHistoryItem => ({
     sessionId: session.id,
-    title: `Tryout ${subject.name}`,
+    title: session.mode === "kisi-kisi" ? `Latihan Kisi-Kisi ${subject.name}` : `Tryout ${subject.name}`,
     subject: { id: subject.slug, name: subject.name, description: subject.description },
     difficulty: session.difficulty,
     status: session.status,
@@ -639,24 +685,23 @@ export async function getPracticeHistoryForUser(
 }
 
 export type ResumeInfo = {
-  /** Nomor soal untuk melanjutkan (1-based): soal terakhir yang dibuka. */
   orderNumber: number;
   answeredCount: number;
   flaggedCount: number;
   remainingSeconds: number;
-  /** True bila sesi sedang dijeda; panggil POST …/resume agar timer berjalan lagi. */
   paused: boolean;
   serverNow: string;
 };
 
-/** Ringkasan untuk melanjutkan sesi yang belum selesai (dari data sesi yang sudah dimuat). */
 export function getResumeInfo(session: TryoutSession): ResumeInfo {
   const now = Date.now();
   const answerList = Object.values(session.answers);
   const paused = session.pausedRemainingSeconds != null;
   return {
     orderNumber: Math.min(Math.max(session.lastOrderNumber ?? 1, 1), session.totalQuestions),
-    answeredCount: answerList.filter((answer) => answer.selectedOptionId).length,
+    answeredCount: answerList.filter(
+      (answer) => Boolean(answer.selectedOptionId) || Boolean(answer.answerText?.trim()),
+    ).length,
     flaggedCount: answerList.filter((answer) => answer.isFlagged).length,
     remainingSeconds: paused
       ? (session.pausedRemainingSeconds ?? 0)

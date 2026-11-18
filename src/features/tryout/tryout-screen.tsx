@@ -17,6 +17,7 @@ import {
   usePersistentDeadline,
 } from "@/features/timer/use-persistent-deadline";
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
+import { isQuestionAnswered } from "@/lib/tryout/grading";
 import type { AnswerState, TryoutSession } from "@/lib/tryout/types";
 import { countAnswers, getOptionLetter, getQuestionStatus } from "./answer-status";
 import { FlagToggle } from "./flag-toggle";
@@ -36,19 +37,17 @@ import { useOptionShortcuts } from "./use-option-shortcuts";
 import { useServerAutosave } from "./use-server-autosave";
 import { pauseTryoutAction, resumeTryoutAction, submitTryoutAction } from "@/server/actions/tryout-actions";
 
-/** Lanjutkan dari soal terakhir yang dibuka, atau soal pertama yang belum dijawab. */
 function getInitialIndex(session: TryoutSession, saved: SavedProgress | null) {
   if (saved) return Math.min(Math.max(saved.lastIndex, 0), session.questions.length - 1);
   if (session.lastOrderNumber) {
     return Math.min(Math.max(session.lastOrderNumber - 1, 0), session.questions.length - 1);
   }
-  const index = session.questions.findIndex((item) => !session.answers[item.id]?.selectedOptionId);
+  const index = session.questions.findIndex((item) => !isQuestionAnswered(session.answers[item.id]));
   return index === -1 ? 0 : index;
 }
 
 type TryoutScreenProps = {
   session: TryoutSession;
-  /** Progres tersimpan di perangkat (jika tryout ini pernah dijeda/ditinggal). */
   saved: SavedProgress | null;
 };
 
@@ -56,7 +55,6 @@ const TIMEOUT_RETRY_MS = 5000;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export function TryoutScreen({ session, saved }: TryoutScreenProps) {
-  // Sesi dari database disimpan ke server; sesi tiruan disimpan di perangkat.
   const serverBacked = UUID_PATTERN.test(session.id);
   const [currentIndex, setCurrentIndex] = useState(() => getInitialIndex(session, saved));
   const [answers, setAnswers] = useState<Record<string, AnswerState>>(() => ({
@@ -69,7 +67,6 @@ export function TryoutScreen({ session, saved }: TryoutScreenProps) {
   const submittingRef = useRef(false);
   const [panelOpen, setPanelOpen] = useState(false);
   const router = useRouter();
-  // Sesi tiruan: deadline disimpan di perangkat. Sesi database: jam server yang berlaku.
   const localDeadline = usePersistentDeadline(session.id, session.deadline, session.startedAt);
   const serverClock = useServerClock(session.id, serverBacked, session.deadline);
   const deadline = serverBacked ? serverClock.deadline : localDeadline;
@@ -86,13 +83,14 @@ export function TryoutScreen({ session, saved }: TryoutScreenProps) {
 
   const total = session.questions.length;
   const question = session.questions[currentIndex];
+  const qType = question.questionType ?? "pg";
   const counts = countAnswers(session.questions, answers);
   const currentAnswer = answers[question.id];
   const selectedOptionId = currentAnswer?.selectedOptionId ?? null;
+  const answerText = currentAnswer?.answerText ?? "";
   const isFirst = currentIndex === 0;
   const isLast = currentIndex === total - 1;
 
-  // Saat pindah soal di layar kecil, bawa pengguna kembali ke awal soal.
   const hasNavigated = useRef(false);
   useEffect(() => {
     if (!hasNavigated.current) {
@@ -122,12 +120,9 @@ export function TryoutScreen({ session, saved }: TryoutScreenProps) {
     savedAt: new Date().toISOString(),
   });
 
-  // Setiap layar ini tampil (pertama kali, atau kembali dari halaman lain), lanjutkan sesi
-  // yang dijeda: timer mulai lagi dari sisa waktu saat dijeda.
   const resumeIfPaused = useEffectEvent(async () => {
     pausedRef.current = false;
     if (serverBacked) {
-      // Sesi database: server menetapkan batas waktu baru dari sisa waktu saat dijeda.
       const sentAt = Date.now();
       const result = await resumeTryoutAction(session.id);
       if (result.ok) serverClock.apply(result.data, sentAt, Date.now());
@@ -143,7 +138,6 @@ export function TryoutScreen({ session, saved }: TryoutScreenProps) {
     void resumeIfPaused();
   }, [session.id]);
 
-  // Simpan otomatis setiap ada perubahan jawaban/posisi soal.
   const persist = useEffectEvent(() => {
     if (serverBacked) return;
     if (!submittingRef.current && !pausedRef.current) writeProgress(buildProgress(null));
@@ -152,10 +146,9 @@ export function TryoutScreen({ session, saved }: TryoutScreenProps) {
     persist();
   }, [answers, currentIndex]);
 
-  /** Jeda: simpan jawaban + sisa waktu, hentikan timer, lalu keluar. */
   const [pausing, setPausing] = useState(false);
   const pauseAndExit = async () => {
-    pausedRef.current = true; // cegah autosave/auto-submit selama berpindah halaman
+    pausedRef.current = true;
     if (serverBacked) {
       setPausing(true);
       const result = await pauseTryoutAction({
@@ -186,7 +179,28 @@ export function TryoutScreen({ session, saved }: TryoutScreenProps) {
         if (previous?.selectedOptionId === optionId) return prev;
         return {
           ...prev,
-          [question.id]: { selectedOptionId: optionId, isFlagged: previous?.isFlagged ?? false },
+          [question.id]: {
+            selectedOptionId: optionId,
+            answerText: previous?.answerText ?? null,
+            isFlagged: previous?.isFlagged ?? false,
+          },
+        };
+      });
+    },
+    [question.id],
+  );
+
+  const changeAnswerText = useCallback(
+    (text: string) => {
+      setAnswers((prev) => {
+        const previous = prev[question.id];
+        return {
+          ...prev,
+          [question.id]: {
+            selectedOptionId: previous?.selectedOptionId ?? null,
+            answerText: text,
+            isFlagged: previous?.isFlagged ?? false,
+          },
         };
       });
     },
@@ -195,7 +209,7 @@ export function TryoutScreen({ session, saved }: TryoutScreenProps) {
 
   const reviewFirst = (kind: "empty" | "flagged") => {
     const index = session.questions.findIndex((item) =>
-      kind === "empty" ? !answers[item.id]?.selectedOptionId : answers[item.id]?.isFlagged,
+      kind === "empty" ? !isQuestionAnswered(answers[item.id]) : answers[item.id]?.isFlagged,
     );
     setSubmitOpen(false);
     if (index >= 0) goTo(index);
@@ -209,7 +223,6 @@ export function TryoutScreen({ session, saved }: TryoutScreenProps) {
     setPanelOpen(false);
     try {
       if (serverBacked) {
-        // Nilai dihitung di server; kirim snapshot jawaban terakhir sekaligus.
         const result = await submitTryoutAction({ sessionId: session.id, reason, answers });
         if (!result.ok) throw new Error(result.message);
       } else {
@@ -218,7 +231,6 @@ export function TryoutScreen({ session, saved }: TryoutScreenProps) {
       }
       clearPersistentDeadline(session.id);
       clearProgress(session.id);
-      // Biarkan status "Mengumpulkan…" tampil sampai halaman hasil terbuka.
       router.replace(
         reason === "timeout"
           ? `/tryout/${session.id}/hasil?alasan=waktu-habis`
@@ -228,7 +240,6 @@ export function TryoutScreen({ session, saved }: TryoutScreenProps) {
       submittingRef.current = false;
       setSubmitting(false);
       if (reason === "timeout") {
-        // Waktu habis tapi gagal terkirim (mis. offline): coba lagi otomatis.
         toast.error("Gagal mengumpulkan jawaban", {
           id: "timeout-submit",
           description: "Kami coba kirim lagi otomatis begitu koneksi kembali.",
@@ -243,7 +254,6 @@ export function TryoutScreen({ session, saved }: TryoutScreenProps) {
     }
   };
 
-  // Waktu habis → kumpulkan otomatis, apa pun yang sedang terbuka.
   const timeUp = remaining === 0;
   const onTimeUp = useEffectEvent(() => {
     void submit("timeout");
@@ -252,7 +262,6 @@ export function TryoutScreen({ session, saved }: TryoutScreenProps) {
     if (remaining === 0) onTimeUp();
   }, [remaining]);
 
-  // Pengumpulan otomatis yang gagal dicoba ulang berkala dan saat perangkat kembali online.
   const [timeoutRetries, setTimeoutRetries] = useState(0);
   useEffect(() => {
     if (timeoutRetries === 0) return;
@@ -265,8 +274,6 @@ export function TryoutScreen({ session, saved }: TryoutScreenProps) {
     };
   }, [timeoutRetries]);
 
-  // Server sudah menutup sesi (waktu habis saat perangkat tidur, atau dikumpulkan di tab lain):
-  // hentikan pengerjaan dan buka hasilnya.
   const closedByServer = serverBacked && (serverClock.finished || autosave.closed);
   const onClosedByServer = useEffectEvent(() => {
     if (submittingRef.current) return;
@@ -286,6 +293,7 @@ export function TryoutScreen({ session, saved }: TryoutScreenProps) {
         ...prev,
         [question.id]: {
           selectedOptionId: previous?.selectedOptionId ?? null,
+          answerText: previous?.answerText ?? null,
           isFlagged: !previous?.isFlagged,
         },
       };
@@ -294,13 +302,18 @@ export function TryoutScreen({ session, saved }: TryoutScreenProps) {
 
   const pickByIndex = useCallback(
     (index: number) => {
+      if (qType !== "pg") return;
       const option = question.options[index];
       if (option) selectAnswer(option.id);
     },
-    [question.options, selectAnswer],
+    [qType, question.options, selectAnswer],
   );
 
-  useOptionShortcuts(!submitOpen && !panelOpen && !exitOpen, question.options.length, pickByIndex);
+  useOptionShortcuts(
+    qType === "pg" && !submitOpen && !panelOpen && !exitOpen,
+    question.options.length,
+    pickByIndex,
+  );
 
   return (
     <div className="flex min-h-dvh flex-col bg-white text-play-ink">
@@ -335,20 +348,58 @@ export function TryoutScreen({ session, saved }: TryoutScreenProps) {
           badges={
             <StatusBadge
               status={getQuestionStatus(currentAnswer)}
-              letter={getOptionLetter(question, selectedOptionId)}
+              letter={qType === "pg" ? getOptionLetter(question, selectedOptionId) : null}
             />
           }
           footnote={
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <p className="hidden items-center gap-2 text-sm font-bold text-play-ink-muted md:flex">
-                <Keyboard aria-hidden="true" className="size-4" />
-                Tip: tekan A–E atau 1–5 di keyboard untuk memilih jawaban
-              </p>
+              {qType === "pg" ? (
+                <p className="hidden items-center gap-2 text-sm font-bold text-play-ink-muted md:flex">
+                  <Keyboard aria-hidden="true" className="size-4" />
+                  Tip: tekan A–D atau 1–4 di keyboard untuk memilih jawaban
+                </p>
+              ) : (
+                <p className="text-sm font-bold text-play-ink-muted">
+                  {qType === "isian"
+                    ? "Tuliskan jawaban singkat dengan jelas pada kolom di atas."
+                    : "Jawaban uraian akan dilengkapi pedoman penilaian di halaman Pembahasan."}
+                </p>
+              )}
               {serverBacked ? <SaveStatusText status={autosave.status} onRetry={autosave.retry} /> : null}
             </div>
           }
         >
-          <OptionList question={question} selectedOptionId={selectedOptionId} onSelect={selectAnswer} />
+          {qType === "pg" ? (
+            <OptionList question={question} selectedOptionId={selectedOptionId} onSelect={selectAnswer} />
+          ) : qType === "isian" ? (
+            <div className="flex flex-col gap-2">
+              <label htmlFor={`isian-${question.id}`} className="text-sm font-black text-play-ink">
+                Jawaban Isian Singkat
+              </label>
+              <input
+                id={`isian-${question.id}`}
+                type="text"
+                value={answerText}
+                onChange={(e) => changeAnswerText(e.target.value)}
+                placeholder="Ketik jawaban singkatmu di sini…"
+                className="h-14 w-full rounded-2xl border-2 border-play-line bg-white px-4 text-lg font-bold text-play-ink placeholder:text-play-ink-faint focus:border-play-blue focus:outline-none"
+              />
+            </div>
+          ) : (
+            <div className="flex flex-col gap-2">
+              <label htmlFor={`uraian-${question.id}`} className="text-sm font-black text-play-ink">
+                Jawaban Uraian / Essay
+              </label>
+              <textarea
+                id={`uraian-${question.id}`}
+                rows={5}
+                value={answerText}
+                onChange={(e) => changeAnswerText(e.target.value)}
+                placeholder="Tuliskan jawaban lengkapmu di sini…"
+                className="w-full rounded-2xl border-2 border-play-line bg-white p-4 text-base leading-relaxed font-bold text-play-ink placeholder:text-play-ink-faint focus:border-play-blue focus:outline-none"
+              />
+            </div>
+          )}
         </QuestionView>
 
         <NumberPanel
@@ -410,7 +461,6 @@ export function TryoutScreen({ session, saved }: TryoutScreenProps) {
           side="bottom"
           aria-describedby={undefined}
           onOpenAutoFocus={(event) => {
-            // Fokus ke nomor soal yang sedang dibuka, bukan nomor 1.
             const current = (event.currentTarget as HTMLElement | null)?.querySelector<HTMLElement>(
               "[data-current]",
             );

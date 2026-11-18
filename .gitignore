@@ -43,3 +43,6 @@ next-env.d.ts
 
 # NgodingPakeAI: state lokal CLI (index, ringkasan, id workspace)
 /.ngodingpakeai/
+
+# Penyimpanan sesi tryout lokal saat DATABASE_URL belum diset
+/.tryout-local/

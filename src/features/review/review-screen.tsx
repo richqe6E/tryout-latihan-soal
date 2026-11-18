@@ -91,6 +91,7 @@ export function ReviewScreen({ review }: { review: TryoutReview }) {
                   question={question}
                   total={review.questions.length}
                   selectedOptionId={answers[question.id]?.selectedOptionId ?? null}
+                  answerText={answers[question.id]?.answerText ?? null}
                   outcome={result.outcomes[question.id] ?? "kosong"}
                 />
               ))

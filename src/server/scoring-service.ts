@@ -1,23 +1,46 @@
 import "server-only";
 
-import { asc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
+import { db } from "@/db";
+import { answers, options, questions, sessionQuestions } from "@/db/schema";
+import type { QuestionType } from "@/lib/kisi-kisi/types";
 import { gradeAnswers } from "@/lib/tryout/grading";
 import type { AnswerState, TryoutScore } from "@/lib/tryout/types";
-import { db } from "@/db";
-import { answers, options, sessionQuestions } from "@/db/schema";
 
 type Executor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
 
-/** Kunci jawaban satu soal dalam sesi: hanya id, tanpa teks soal/pembahasan. */
-export type AnswerKeyEntry = { id: string; correctOptionId: string; optionIds: string[] };
+export type AnswerKeyEntry = {
+  id: string;
+  questionType: QuestionType;
+  correctOptionId: string;
+  optionIds: string[];
+  expectedAnswer?: string;
+  acceptedAnswers?: string[];
+};
 
-/** Kunci jawaban sesi, urut sesuai nomor soal. Selalu dibaca dari database, tak pernah dari klien. */
+function parseAccepted(raw: string | null | undefined): string[] | undefined {
+  if (!raw) return undefined;
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.map(String) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export async function getAnswerKey(sessionId: string, executor: Executor = db): Promise<AnswerKeyEntry[]> {
   const rows = await executor
-    .select({ questionId: sessionQuestions.questionId })
+    .select({
+      questionId: sessionQuestions.questionId,
+      questionType: questions.questionType,
+      expectedAnswer: questions.expectedAnswer,
+      acceptedAnswers: questions.acceptedAnswers,
+    })
     .from(sessionQuestions)
+    .innerJoin(questions, eq(questions.id, sessionQuestions.questionId))
     .where(eq(sessionQuestions.sessionId, sessionId))
     .orderBy(asc(sessionQuestions.orderNumber));
+
   const questionIds = rows.map((row) => row.questionId);
   const optionRows = questionIds.length
     ? await executor
@@ -27,17 +50,19 @@ export async function getAnswerKey(sessionId: string, executor: Executor = db): 
         .orderBy(asc(options.position))
     : [];
 
-  return questionIds.map((id) => {
-    const own = optionRows.filter((option) => option.questionId === id);
+  return rows.map((row) => {
+    const own = optionRows.filter((option) => option.questionId === row.questionId);
     return {
-      id,
+      id: row.questionId,
+      questionType: row.questionType,
       correctOptionId: own.find((option) => option.isCorrect)?.id ?? "",
       optionIds: own.map((option) => option.id),
+      expectedAnswer: row.expectedAnswer ?? undefined,
+      acceptedAnswers: parseAccepted(row.acceptedAnswers),
     };
   });
 }
 
-/** Jawaban yang tersimpan untuk sesi, dikunci per id soal. */
 export async function getSavedAnswers(
   sessionId: string,
   executor: Executor = db,
@@ -46,31 +71,38 @@ export async function getSavedAnswers(
     .select({
       questionId: answers.questionId,
       selectedOptionId: answers.selectedOptionId,
+      answerText: answers.answerText,
       isFlagged: answers.isFlagged,
     })
     .from(answers)
     .where(eq(answers.sessionId, sessionId));
   return Object.fromEntries(
-    rows.map((row) => [row.questionId, { selectedOptionId: row.selectedOptionId, isFlagged: row.isFlagged }]),
+    rows.map((row) => [
+      row.questionId,
+      {
+        selectedOptionId: row.selectedOptionId,
+        answerText: row.answerText,
+        isFlagged: row.isFlagged,
+      },
+    ]),
   );
 }
 
-/**
- * Nilai jawaban terhadap kunci. Pilihan yang bukan milik soalnya dianggap kosong,
- * sama dengan cara `markAnswerCorrectness` menandai `is_correct`.
- */
 export function scoreAgainstKey(key: AnswerKeyEntry[], saved: Record<string, AnswerState>): TryoutScore {
   const sanitized: Record<string, AnswerState> = {};
   for (const entry of key) {
     const answer = saved[entry.id];
     if (!answer) continue;
     const valid = answer.selectedOptionId !== null && entry.optionIds.includes(answer.selectedOptionId);
-    sanitized[entry.id] = { ...answer, selectedOptionId: valid ? answer.selectedOptionId : null };
+    sanitized[entry.id] = {
+      ...answer,
+      selectedOptionId: valid ? answer.selectedOptionId : null,
+      answerText: answer.answerText ?? null,
+    };
   }
   return gradeAnswers(key, sanitized);
 }
 
-/** Hitung nilai sesi dari jawaban yang tersimpan di database. */
 export async function calculateSessionScore(
   sessionId: string,
   executor: Executor = db,
@@ -83,14 +115,20 @@ export async function calculateSessionScore(
 }
 
 /**
- * Tandai benar/salah tiap jawaban dalam satu query: benar/salah mengikuti pilihan yang
- * dipilih, kosong (atau pilihan bukan milik soalnya) menjadi null.
+ * Menandai `is_correct` tiap jawaban di database berdasarkan hasil penilaian lengkap
+ * (mendukung PG, Isian Singkat, maupun Uraian).
  */
-export async function markAnswerCorrectness(sessionId: string, executor: Executor = db) {
-  await executor
-    .update(answers)
-    .set({
-      isCorrect: sql`(SELECT ${options.isCorrect} FROM ${options} WHERE ${options.id} = ${answers.selectedOptionId} AND ${options.questionId} = ${answers.questionId})`,
-    })
-    .where(eq(answers.sessionId, sessionId));
+export async function markAnswerCorrectness(
+  sessionId: string,
+  executor: Executor = db,
+  scoreResult?: TryoutScore,
+) {
+  const result = scoreResult ?? (await calculateSessionScore(sessionId, executor));
+  for (const [questionId, outcome] of Object.entries(result.outcomes)) {
+    const isCorrect = outcome === "kosong" ? null : outcome === "benar";
+    await executor
+      .update(answers)
+      .set({ isCorrect })
+      .where(and(eq(answers.sessionId, sessionId), eq(answers.questionId, questionId)));
+  }
 }

@@ -1,26 +1,15 @@
-/**
- * Isi bank soal secara aditif: mapel di-upsert berdasarkan slug, soal baru ditambahkan,
- * dan soal yang sudah ada (teks sama dalam mapel yang sama) dilewati tanpa diubah —
- * sehingga aman dijalankan berulang dan tidak menyentuh data pengguna.
- */
 import { and, asc, eq, sql } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
-import { QUESTION_BANK, SUBJECTS, type BankQuestion } from "../lib/mock/question-bank";
+import { KISI_KISI_PACKAGES } from "../lib/kisi-kisi";
 import * as schema from "./schema";
-import { EXTRA_QUESTIONS } from "./seed-data/extra-questions";
 
 type Db = NodePgDatabase<typeof schema>;
-
-/** Seluruh soal contoh untuk database: bank frontend + soal tambahan. */
-export const SEED_QUESTIONS: BankQuestion[] = [...QUESTION_BANK, ...EXTRA_QUESTIONS];
 
 export type BankSeedResult = {
   subjects: number;
   inserted: number;
   skipped: number;
-  /** Kode soal bank → id soal di database. */
   questionIdByCode: Map<string, string>;
-  /** Kode soal bank → id pilihan di database, urut posisi (0 = A). */
   optionIdsByCode: Map<string, string[]>;
 };
 
@@ -28,10 +17,10 @@ export async function seedQuestionBank(db: Db): Promise<BankSeedResult> {
   const subjectRows = await db
     .insert(schema.subjects)
     .values(
-      SUBJECTS.map((subject, position) => ({
-        slug: subject.id,
-        name: subject.name,
-        description: subject.description,
+      KISI_KISI_PACKAGES.map((pkg, position) => ({
+        slug: pkg.meta.slug,
+        name: pkg.meta.name,
+        description: pkg.meta.description,
         position,
       })),
     )
@@ -44,28 +33,43 @@ export async function seedQuestionBank(db: Db): Promise<BankSeedResult> {
       },
     })
     .returning({ id: schema.subjects.id, slug: schema.subjects.slug });
+
   const subjectIdBySlug = new Map(subjectRows.map((row) => [row.slug, row.id]));
+  const allQuestions = KISI_KISI_PACKAGES.flatMap((pkg) => pkg.questions);
 
   const questionIdByCode = new Map<string, string>();
   const optionIdsByCode = new Map<string, string[]>();
   let inserted = 0;
 
-  for (const item of SEED_QUESTIONS) {
-    const subjectId = subjectIdBySlug.get(item.subjectId);
-    if (!subjectId) throw new Error(`Mapel "${item.subjectId}" untuk soal ${item.id} tidak dikenal.`);
+  for (const item of allQuestions) {
+    const subjectId = subjectIdBySlug.get(item.subjectSlug);
+    if (!subjectId) throw new Error(`Mapel "${item.subjectSlug}" untuk soal ${item.code} tidak dikenal.`);
 
     const questionId = await db.transaction(async (tx) => {
-      // Konflik pada index unik teks soal → soal sudah ada; lewati.
       const [created] = await tx
         .insert(schema.questions)
         .values({
           subjectId,
           questionText: item.text,
           difficulty: item.difficulty,
+          questionType: item.type,
+          typeLabel: item.typeLabel ?? null,
+          questionNumber: item.number,
+          topic: item.topic,
+          indicator: item.indicator,
+          cognitiveLevel: item.cognitiveLevel,
+          stimulusTitle: item.stimulusTitle ?? null,
+          stimulusText: item.stimulusText ?? null,
+          visualAsset: item.visualAsset ?? null,
+          visualCaption: item.visualCaption ?? null,
+          expectedAnswer: item.expectedAnswer,
+          acceptedAnswers: item.acceptedAnswers ? JSON.stringify(item.acceptedAnswers) : null,
+          rubricNotes: item.rubricNotes ?? null,
           explanation: item.explanation,
         })
         .onConflictDoNothing()
         .returning({ id: schema.questions.id });
+
       if (!created) {
         const [existing] = await tx
           .select({ id: schema.questions.id })
@@ -79,15 +83,19 @@ export async function seedQuestionBank(db: Db): Promise<BankSeedResult> {
           .limit(1);
         return existing.id;
       }
-      await tx.insert(schema.options).values(
-        item.options.map((option, position) => ({
-          questionId: created.id,
-          optionText: option.text,
-          isCorrect: option.isCorrect,
-          position,
-          explanation: option.explanation ?? null,
-        })),
-      );
+
+      if (item.options && item.options.length > 0) {
+        await tx.insert(schema.options).values(
+          item.options.map((option, position) => ({
+            questionId: created.id,
+            optionText: option.text,
+            isCorrect: option.isCorrect,
+            position,
+            explanation: option.explanation ?? null,
+          })),
+        );
+      }
+
       inserted += 1;
       return created.id;
     });
@@ -97,9 +105,10 @@ export async function seedQuestionBank(db: Db): Promise<BankSeedResult> {
       .from(schema.options)
       .where(eq(schema.options.questionId, questionId))
       .orderBy(asc(schema.options.position));
-    questionIdByCode.set(item.id, questionId);
+
+    questionIdByCode.set(item.code, questionId);
     optionIdsByCode.set(
-      item.id,
+      item.code,
       optionRows.map((row) => row.id),
     );
   }
@@ -107,7 +116,7 @@ export async function seedQuestionBank(db: Db): Promise<BankSeedResult> {
   return {
     subjects: subjectRows.length,
     inserted,
-    skipped: SEED_QUESTIONS.length - inserted,
+    skipped: allQuestions.length - inserted,
     questionIdByCode,
     optionIdsByCode,
   };

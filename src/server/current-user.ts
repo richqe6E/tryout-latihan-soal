@@ -2,15 +2,33 @@ import "server-only";
 
 import { headers } from "next/headers";
 import { cache } from "react";
-import { auth } from "@/server/auth";
+import { hasDatabase } from "@/db";
+import { readStudentCookie } from "@/lib/auth/student-cookie";
+import { getAuth } from "@/server/auth";
 
 export type CurrentUser = { id: string; name: string; email: string; phone: string | null; createdAt: Date };
 
 /**
- * Pengguna yang sedang masuk (baris tabel `users`), dari sesi Better Auth.
- * Di-cache per permintaan supaya beberapa komponen/aksi tidak memvalidasi sesi berulang kali.
+ * Pengguna yang sedang masuk:
+ * 1. Memeriksa cookie siswa (`tryoutyuk_student` — login cukup dengan nama siswa).
+ * 2. Fallback ke sesi Better Auth bila DATABASE_URL aktif.
  */
 export const getCurrentDbUser = cache(async (): Promise<CurrentUser | null> => {
+  const student = await readStudentCookie();
+  if (student) {
+    return {
+      id: student.id,
+      name: student.name,
+      email: student.email,
+      phone: null,
+      createdAt: new Date(student.createdAt),
+    };
+  }
+
+  if (!hasDatabase()) return null;
+  const auth = getAuth();
+  if (!auth) return null;
+
   const session = await auth.api.getSession({ headers: await headers() });
   if (session) {
     const { user } = session;

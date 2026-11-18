@@ -12,10 +12,11 @@ const nunito = Nunito({
 
 export const metadata: Metadata = {
   title: {
-    default: "Tryout Yuk",
-    template: "%s · Tryout Yuk",
+    default: "Latihan Soal Kisi-Kisi · Tryout Yuk",
+    template: "%s · Latihan Kisi-Kisi",
   },
-  description: "Latihan tryout pilihan ganda dengan timer mundur, pembahasan tiap soal, dan riwayat nilai.",
+  description:
+    "Latihan tryout dan belajar kisi-kisi Kelas IV SD (PG, Isian, Uraian) lengkap dengan pembahasan dan unduhan PDF Soal & Kunci Jawaban terpisah.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

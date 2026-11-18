@@ -4,30 +4,27 @@ import {
   AUTH_COOKIE_PREFIX,
   PROTECTED_API_PREFIXES,
   PROTECTED_PREFIXES,
+  STUDENT_COOKIE_NAME,
   matchesPrefix,
 } from "@/lib/auth/session";
 
 /**
- * Proteksi optimistis halaman & API data pribadi (nilai, riwayat, tryout, akun): hanya melihat
- * ada/tidaknya cookie sesi supaya permintaan tanpa sesi ditolak cepat. Validasi sesi yang
- * sesungguhnya tetap di server (halaman: getCurrentUser, API: requireApiUser), dan setiap query
- * dibatasi ke `user_id` pengguna yang masuk.
+ * Proteksi optimistis halaman & API data pribadi:
+ * mengizinkan sesi siswa berbasis nama (`tryoutyuk_student`) maupun sesi Better Auth.
  */
 export function proxy(request: NextRequest) {
   const { pathname, search } = request.nextUrl;
-  const hasSession = Boolean(getSessionCookie(request, { cookiePrefix: AUTH_COOKIE_PREFIX }));
-  if (hasSession) return NextResponse.next();
+  const hasStudentCookie = Boolean(request.cookies.get(STUDENT_COOKIE_NAME)?.value);
+  const hasBetterAuthCookie = Boolean(getSessionCookie(request, { cookiePrefix: AUTH_COOKIE_PREFIX }));
+  if (hasStudentCookie || hasBetterAuthCookie) return NextResponse.next();
 
   if (matchesPrefix(pathname, PROTECTED_API_PREFIXES)) {
     return NextResponse.json(
-      { error: "Silakan masuk dulu.", code: "unauthorized" },
+      { error: "Silakan isi nama siswa dulu.", code: "unauthorized" },
       { status: 401, headers: { "Cache-Control": "private, no-store" } },
     );
   }
 
-  // Tanpa cookie sesi pasti belum masuk → langsung ke halaman masuk.
-  // (Halaman khusus tamu mengecek sesi yang sudah divalidasi di server, bukan di sini:
-  //  cookie yang basi tidak boleh mengunci pengguna di luar halaman masuk.)
   if (matchesPrefix(pathname, PROTECTED_PREFIXES)) {
     const url = new URL("/masuk", request.url);
     url.searchParams.set("next", `${pathname}${search}`);

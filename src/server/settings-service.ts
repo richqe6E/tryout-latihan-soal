@@ -2,23 +2,21 @@ import "server-only";
 
 import { eq, sql } from "drizzle-orm";
 import { z } from "zod";
-import { db } from "@/db";
+import { db, hasDatabase } from "@/db";
 import { userSettings } from "@/db/schema";
 import type { UserSettings } from "@/lib/tryout/types";
 import { SESSION_LIMITS, validateSessionSize } from "@/lib/tryout/limits";
+import { getLocalSettings, saveLocalSettings } from "@/server/local-store";
 
-/** Pengaturan bawaan untuk akun yang belum pernah menyimpan pengaturan. */
 export const DEFAULT_SETTINGS: UserSettings = {
-  defaultQuestionCount: SESSION_LIMITS.defaultQuestions,
-  defaultDurationSeconds: SESSION_LIMITS.defaultDurationSeconds,
+  defaultQuestionCount: 35,
+  defaultDurationSeconds: 60 * 60,
   reminderEnabled: true,
   reminderTime: "19:00",
 };
 
-/** Isian pengaturan yang boleh diubah; semua opsional (yang tidak dikirim tetap seperti semula). */
 export const settingsInputSchema = z
   .object({
-    // Batas & waktu minimal per soal diperiksa validateSessionSize (pesan per isian).
     defaultQuestionCount: z.number().int(),
     defaultDurationSeconds: z.number().int(),
     reminderEnabled: z.boolean(),
@@ -38,8 +36,8 @@ function toSettings(row: typeof userSettings.$inferSelect): UserSettings {
   };
 }
 
-/** Pengaturan pengguna; bawaan bila belum pernah disimpan. */
 export async function getSettingsForUser(userId: string): Promise<UserSettings> {
+  if (!hasDatabase()) return getLocalSettings(userId);
   const [row] = await db.select().from(userSettings).where(eq(userSettings.userId, userId)).limit(1);
   return row ? toSettings(row) : DEFAULT_SETTINGS;
 }
@@ -48,11 +46,8 @@ export type SaveSettingsResult =
   | { ok: true; settings: UserSettings }
   | { ok: false; message: string; fields: Partial<Record<keyof UserSettings, string>> };
 
-/**
- * Simpan (sebagian) pengaturan; baris dibuat otomatis saat pertama kali disimpan. Gabungan nilai
- * baru + lama diperiksa dulu: batas jumlah soal & durasi serta waktu minimal per soal.
- */
 export async function saveSettingsForUser(userId: string, input: SettingsInput): Promise<SaveSettingsResult> {
+  if (!hasDatabase()) return saveLocalSettings(userId, input);
   const current = await getSettingsForUser(userId);
   const merged = { ...current, ...input };
   const sizeErrors = validateSessionSize({
@@ -71,9 +66,10 @@ export async function saveSettingsForUser(userId: string, input: SettingsInput):
     .values({ userId, ...merged })
     .onConflictDoUpdate({
       target: userSettings.userId,
-      // Hanya kolom yang dikirim yang diubah.
       set: Object.keys(input).length > 0 ? input : { updatedAt: sql`now()` },
     })
     .returning();
   return { ok: true, settings: toSettings(row) };
 }
+
+export { SESSION_LIMITS };

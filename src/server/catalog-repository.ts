@@ -2,21 +2,21 @@ import "server-only";
 
 import { and, asc, eq, sql } from "drizzle-orm";
 import { cacheLife, cacheTag } from "next/cache";
-import { db } from "@/db";
+import { db, hasDatabase } from "@/db";
 import { questions, subjects } from "@/db/schema";
 import type { Difficulty, SubjectCatalogItem } from "@/lib/tryout/types";
+import { getLocalSubjectCatalog } from "@/server/local-store";
 
-/** Tag cache katalog mapel; revalidasi setelah bank soal berubah. */
 export const SUBJECT_CATALOG_TAG = "subject-catalog";
 
-/**
- * Mapel aktif (urut `position`) beserta jumlah soal AKTIF per tingkat kesulitan.
- * Di-cache beberapa menit: bank soal jarang berubah dan halaman pilih tryout sering dibuka.
- */
 export async function getSubjectCatalog(): Promise<SubjectCatalogItem[]> {
   "use cache";
   cacheLife("minutes");
   cacheTag(SUBJECT_CATALOG_TAG);
+
+  if (!hasDatabase()) {
+    return getLocalSubjectCatalog();
+  }
 
   const rows = await db
     .select({
@@ -45,7 +45,6 @@ export async function getSubjectCatalog(): Promise<SubjectCatalogItem[]> {
       };
       bySlug.set(row.slug, item);
     }
-    // Mapel tanpa soal aktif menghasilkan satu baris dengan difficulty null.
     if (row.difficulty) {
       item.counts[row.difficulty as Difficulty] = row.count;
       item.total += row.count;

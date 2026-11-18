@@ -10,6 +10,7 @@ import {
   BookOpen,
   ChartLine,
   CircleCheck,
+  FileText,
   Gauge,
   ListOrdered,
   RotateCcw,
@@ -23,7 +24,7 @@ import { SubjectIcon } from "@/components/subject-icon";
 import { PlayButton } from "@/components/ui/play-button";
 import { TimeoutNotice } from "@/features/timer/timeout-notice";
 import { formatClock } from "@/lib/format";
-import { gradeAnswers } from "@/lib/tryout/grading";
+import { gradeAnswers, isQuestionAnswered } from "@/lib/tryout/grading";
 import { DIFFICULTY_LABEL, type TryoutReview } from "@/lib/tryout/types";
 import { ScoreBreakdown } from "./score-breakdown";
 import { ScoreComparison } from "./score-comparison";
@@ -76,22 +77,22 @@ export function ResultScreen({ review, timedOut }: ResultScreenProps) {
   const accuracy = answeredCount > 0 ? Math.round((result.correct / answeredCount) * 100) : 0;
 
   const router = useRouter();
-  // Sesi baru dengan mapel & tingkat yang sama, urutan soal diacak ulang.
   const [retrying, startRetry] = useTransition();
   const retry = () => {
     startRetry(async () => {
-      const result = await startTryoutAction({
+      const next = await startTryoutAction({
         subjectSlug: review.subject.id,
         difficulty: review.difficulty,
+        mode: review.mode ?? "kisi-kisi",
         questionCount: review.questions.length,
         durationSeconds: review.durationSeconds,
       });
-      if (!result.ok) {
-        toast.error("Tryout belum bisa dimulai", { description: result.message });
+      if (!next.ok) {
+        toast.error("Tryout belum bisa dimulai", { description: next.message });
         return;
       }
-      announceLimitedSession(result.data);
-      router.push(`/tryout/${result.data.sessionId}`);
+      announceLimitedSession(next.data);
+      router.push(`/tryout/${next.data.sessionId}`);
     });
   };
 
@@ -115,7 +116,7 @@ export function ResultScreen({ review, timedOut }: ResultScreenProps) {
         </li>
         <li className="inline-flex items-center gap-1.5 rounded-full bg-play-polar px-3 py-1.5 text-sm font-extrabold text-play-ink">
           <Gauge aria-hidden="true" className="size-4" />
-          {DIFFICULTY_LABEL[review.difficulty]}
+          {review.mode === "kisi-kisi" ? "Paket Kisi-Kisi" : DIFFICULTY_LABEL[review.difficulty]}
         </li>
         <li className="inline-flex items-center gap-1.5 rounded-full bg-play-polar px-3 py-1.5 text-sm font-extrabold text-play-ink">
           <ListOrdered aria-hidden="true" className="size-4" />
@@ -128,13 +129,19 @@ export function ResultScreen({ review, timedOut }: ResultScreenProps) {
           sessionId={review.sessionId}
           fallback={{
             submittedAt: review.finishedAt,
-            answered: Object.values(review.answers).filter((answer) => answer.selectedOptionId).length,
+            answered: Object.values(review.answers).filter((answer) => isQuestionAnswered(answer)).length,
             total: review.questions.length,
           }}
         />
       ) : null}
 
       <ScoreHero score={result.score} ready={ready} />
+
+      {(result.essayTotal ?? 0) > 0 ? (
+        <p className="w-full rounded-2xl border-2 border-play-blue bg-play-blue-soft px-4 py-3 text-sm font-bold text-play-blue-ink">
+          Paket ini memiliki {result.essayTotal} soal Uraian/Essay ({result.essayAnswered ?? 0} terisi). Cek kesesuaian jawaban uraianmu dengan pedoman resmi di halaman <strong className="font-black">Pembahasan</strong>.
+        </p>
+      ) : null}
 
       <ul aria-label="Ringkasan" className="grid w-full grid-cols-3 gap-2 sm:gap-3">
         <StatCard
@@ -175,9 +182,15 @@ export function ResultScreen({ review, timedOut }: ResultScreenProps) {
           </PlayButton>
           <PlayButton block onClick={retry} disabled={retrying}>
             <RotateCcw aria-hidden="true" />
-            Coba lagi, soal diacak
+            Ulangi tryout
           </PlayButton>
         </div>
+        <PlayButton block asChild>
+          <Link href={`/kisi-kisi/${review.subject.id}`}>
+            <FileText aria-hidden="true" />
+            Lihat Kisi-Kisi &amp; Unduh PDF
+          </Link>
+        </PlayButton>
         <PlayButton block asChild>
           <Link href="/mulai">
             <Shuffle aria-hidden="true" />

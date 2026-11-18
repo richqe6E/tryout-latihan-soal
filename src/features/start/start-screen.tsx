@@ -3,9 +3,10 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
-import { ArrowLeft, LoaderCircle } from "lucide-react";
+import { ArrowLeft, BookOpenCheck, LoaderCircle } from "lucide-react";
 import { RadioGroup as RadioGroupPrimitive } from "radix-ui";
 import { toast } from "sonner";
+import { cn } from "cn";
 import { PlayButton } from "@/components/ui/play-button";
 import { startTryoutAction } from "@/server/actions/tryout-actions";
 import { announceLimitedSession } from "./limited-session-notice";
@@ -15,18 +16,25 @@ import { DIFFICULTIES, DifficultyPicker } from "./difficulty-picker";
 import { LimitedQuestionsNotice } from "./limited-questions-notice";
 import { SubjectCard, type SubjectOption } from "./subject-card";
 
-/** Pilih mata pelajaran dan tingkat kesulitan sebelum memulai tryout. */
 export function StartScreen({ subjects, settings }: { subjects: SubjectOption[]; settings: UserSettings }) {
   const router = useRouter();
   const active = settings;
   const durationMinutes = Math.round(active.defaultDurationSeconds / 60);
   const [subjectId, setSubjectId] = useState<string>("");
+  const [mode, setMode] = useState<"kisi-kisi" | "latihan">("kisi-kisi");
   const [difficulty, setDifficulty] = useState<Difficulty>("sedang");
   const [starting, startTransition] = useTransition();
 
   const subject = subjects.find((item) => item.id === subjectId);
-  const available = subject ? subject.counts[difficulty] : 0;
-  const questionCount = Math.min(active.defaultQuestionCount, available);
+  const available = subject
+    ? mode === "kisi-kisi"
+      ? (subject.total ?? subject.counts.mudah + subject.counts.sedang + subject.counts.sulit)
+      : subject.counts[difficulty]
+    : 0;
+  const questionCount =
+    mode === "kisi-kisi" ? available : Math.min(active.defaultQuestionCount, available);
+  const effectiveDurationMinutes =
+    mode === "kisi-kisi" ? Math.max(durationMinutes, 60) : durationMinutes;
 
   const start = () => {
     if (!subject || available === 0) return;
@@ -34,8 +42,9 @@ export function StartScreen({ subjects, settings }: { subjects: SubjectOption[];
       const result = await startTryoutAction({
         subjectSlug: subject.id,
         difficulty,
+        mode,
         questionCount,
-        durationSeconds: durationMinutes * 60,
+        durationSeconds: effectiveDurationMinutes * 60,
       });
       if (!result.ok) {
         toast.error("Tryout belum bisa dimulai", { description: result.message });
@@ -48,23 +57,72 @@ export function StartScreen({ subjects, settings }: { subjects: SubjectOption[];
 
   return (
     <div className="flex min-h-dvh flex-col bg-white text-play-ink">
-      <header className="mx-auto flex w-full max-w-3xl items-center gap-3 px-4 pt-4 md:px-8 md:pt-6">
+      <header className="mx-auto flex w-full max-w-3xl items-center justify-between gap-3 px-4 pt-4 md:px-8 md:pt-6">
+        <div className="flex items-center gap-3">
+          <Link
+            href="/"
+            aria-label="Kembali ke beranda"
+            className="inline-flex size-12 items-center justify-center rounded-lg text-play-ink-muted transition-colors hover:bg-play-polar focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-play-ink"
+          >
+            <ArrowLeft aria-hidden="true" className="size-6" />
+          </Link>
+          <h1 className="text-2xl font-black tracking-tight md:text-3xl">Mulai tryout baru</h1>
+        </div>
         <Link
-          href="/"
-          aria-label="Kembali ke beranda"
-          className="inline-flex size-12 items-center justify-center rounded-lg text-play-ink-muted transition-colors hover:bg-play-polar focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-play-ink"
+          href="/kisi-kisi"
+          className="inline-flex items-center gap-1.5 rounded-xl border-2 border-play-line px-3 py-2 text-sm font-black text-play-blue-ink hover:bg-play-polar"
         >
-          <ArrowLeft aria-hidden="true" className="size-6" />
+          <BookOpenCheck aria-hidden="true" className="size-4" />
+          <span className="max-sm:hidden">Kisi-Kisi &amp; PDF</span>
         </Link>
-        <h1 className="text-2xl font-black tracking-tight md:text-3xl">Mulai tryout baru</h1>
       </header>
 
-      <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-8 px-4 pt-4 pb-8 md:px-8">
-        <ActiveSettingsCard
-          questionCount={active.defaultQuestionCount}
-          durationMinutes={durationMinutes}
-          effectiveCount={subject && available > 0 ? questionCount : null}
-        />
+      <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-7 px-4 pt-4 pb-8 md:px-8">
+        <section aria-labelledby="mode-title" className="flex flex-col gap-3">
+          <h2 id="mode-title" className="text-xl font-black">
+            Pilih mode latihan
+          </h2>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <button
+              type="button"
+              onClick={() => setMode("kisi-kisi")}
+              className={cn(
+                "press-3d flex flex-col gap-1 rounded-2xl border-solid p-4 text-left transition-colors",
+                mode === "kisi-kisi"
+                  ? "border-play-blue border-b-play-blue-strong bg-play-blue-soft text-play-blue-ink"
+                  : "border-play-line bg-white text-play-ink hover:bg-play-polar",
+              )}
+            >
+              <span className="text-lg font-black">Paket Lengkap Kisi-Kisi</span>
+              <span className="text-sm font-bold opacity-85">
+                Semua soal berurutan sesuai kisi-kisi (PG a–d, Isian &amp; Uraian).
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setMode("latihan")}
+              className={cn(
+                "press-3d flex flex-col gap-1 rounded-2xl border-solid p-4 text-left transition-colors",
+                mode === "latihan"
+                  ? "border-play-blue border-b-play-blue-strong bg-play-blue-soft text-play-blue-ink"
+                  : "border-play-line bg-white text-play-ink hover:bg-play-polar",
+              )}
+            >
+              <span className="text-lg font-black">Latihan Per Tingkat</span>
+              <span className="text-sm font-bold opacity-85">
+                Soal acak sesuai tingkat kesulitan (Mudah / Sedang / Sulit).
+              </span>
+            </button>
+          </div>
+        </section>
+
+        {mode === "latihan" ? (
+          <ActiveSettingsCard
+            questionCount={active.defaultQuestionCount}
+            durationMinutes={durationMinutes}
+            effectiveCount={subject && available > 0 ? questionCount : null}
+          />
+        ) : null}
 
         <section aria-labelledby="subject-title" className="flex flex-col gap-3">
           <h2 id="subject-title" className="text-xl font-black">
@@ -89,25 +147,27 @@ export function StartScreen({ subjects, settings }: { subjects: SubjectOption[];
           </RadioGroupPrimitive.Root>
         </section>
 
-        <section aria-labelledby="difficulty-title" className="flex flex-col gap-3">
-          <h2 id="difficulty-title" className="text-xl font-black">
-            Pilih tingkat kesulitan
-          </h2>
-          <DifficultyPicker
-            value={difficulty}
-            onChange={setDifficulty}
-            counts={subject?.counts}
-            labelledBy="difficulty-title"
-          />
-          {subject ? (
-            <LimitedQuestionsNotice
-              subjectName={subject.name}
-              difficulty={difficulty}
-              counts={subject.counts}
-              onPick={setDifficulty}
+        {mode === "latihan" ? (
+          <section aria-labelledby="difficulty-title" className="flex flex-col gap-3">
+            <h2 id="difficulty-title" className="text-xl font-black">
+              Pilih tingkat kesulitan
+            </h2>
+            <DifficultyPicker
+              value={difficulty}
+              onChange={setDifficulty}
+              counts={subject?.counts}
+              labelledBy="difficulty-title"
             />
-          ) : null}
-        </section>
+            {subject ? (
+              <LimitedQuestionsNotice
+                subjectName={subject.name}
+                difficulty={difficulty}
+                counts={subject.counts}
+                onPick={setDifficulty}
+              />
+            ) : null}
+          </section>
+        ) : null}
       </main>
 
       <footer className="sticky bottom-0 z-20 border-t-2 border-play-line bg-white">
@@ -116,8 +176,10 @@ export function StartScreen({ subjects, settings }: { subjects: SubjectOption[];
             {!subject
               ? "Pilih mata pelajaran dulu, ya."
               : available === 0
-                ? `Soal ${subject.name} tingkat ${DIFFICULTY_LABEL[difficulty].toLowerCase()} belum tersedia.`
-                : `${subject.name} · ${DIFFICULTY_LABEL[difficulty]} · ${questionCount} soal · ${durationMinutes} menit`}
+                ? `Soal ${subject.name} belum tersedia.`
+                : mode === "kisi-kisi"
+                  ? `${subject.name} · Paket Kisi-Kisi · ${questionCount} soal · ${effectiveDurationMinutes} menit`
+                  : `${subject.name} · ${DIFFICULTY_LABEL[difficulty]} · ${questionCount} soal · ${effectiveDurationMinutes} menit`}
           </p>
           <PlayButton
             tone="green"

@@ -1,6 +1,7 @@
+import { isQuestionAnswered } from "@/lib/tryout/grading";
 import type { AnswerState, TryoutQuestion } from "@/lib/tryout/types";
 
-export const OPTION_LETTERS = ["A", "B", "C", "D", "E", "F"] as const;
+export const OPTION_LETTERS = ["A", "B", "C", "D"] as const;
 
 export type QuestionStatus = "answered" | "flagged" | "empty";
 
@@ -10,10 +11,9 @@ export const STATUS_LABEL: Record<QuestionStatus, string> = {
   empty: "Belum dijawab",
 };
 
-/** Ragu-ragu diprioritaskan supaya soal yang perlu dicek ulang selalu menonjol. */
 export function getQuestionStatus(answer: AnswerState | undefined): QuestionStatus {
   if (answer?.isFlagged) return "flagged";
-  if (answer?.selectedOptionId) return "answered";
+  if (isQuestionAnswered(answer)) return "answered";
   return "empty";
 }
 
@@ -22,13 +22,12 @@ export function countAnswers(questions: TryoutQuestion[], answers: Record<string
   let flagged = 0;
   for (const question of questions) {
     const answer = answers[question.id];
-    if (answer?.selectedOptionId) answered += 1;
+    if (isQuestionAnswered(answer)) answered += 1;
     if (answer?.isFlagged) flagged += 1;
   }
   return { answered, flagged, empty: questions.length - answered };
 }
 
-/** Huruf pilihan (A–E) untuk id pilihan pada sebuah soal. */
 export function getOptionLetter(question: TryoutQuestion, optionId: string | null | undefined) {
   if (!optionId) return null;
   const index = question.options.findIndex((option) => option.id === optionId);
